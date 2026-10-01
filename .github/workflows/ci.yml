@@ -19,6 +19,8 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
+          # Install separately to avoid the jammy glog/unwind solver issue on hosted runners.
+          sudo apt-get install -y libunwind-dev
           sudo apt-get install -y \
             build-essential cmake ninja-build pkg-config curl \
             libopencv-dev libfmt-dev libeigen3-dev libspdlog-dev \
