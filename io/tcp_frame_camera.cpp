@@ -29,14 +29,14 @@ bool connect_with_timeout(int socket, const sockaddr * address, socklen_t addres
 {
   const int original_flags = ::fcntl(socket, F_GETFL, 0);
   if (original_flags < 0 || ::fcntl(socket, F_SETFL, original_flags | O_NONBLOCK) < 0) return false;
+  const auto restore_flags = [socket, original_flags]() {
+    return ::fcntl(socket, F_SETFL, original_flags) == 0;
+  };
 
   const int result = ::connect(socket, address, address_size);
-  if (result == 0) {
-    ::fcntl(socket, F_SETFL, original_flags);
-    return true;
-  }
+  if (result == 0) return restore_flags();
   if (errno != EINPROGRESS && errno != EALREADY && errno != EINTR) {
-    ::fcntl(socket, F_SETFL, original_flags);
+    restore_flags();
     return false;
   }
 
@@ -45,19 +45,20 @@ bool connect_with_timeout(int socket, const sockaddr * address, socklen_t addres
     if (now >= deadline) break;
     const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
     pollfd descriptor{socket, POLLOUT, 0};
-    const int ready = ::poll(&descriptor, 1, static_cast<int>(std::max<int64_t>(1, remaining.count())));
+    const int timeout_ms = static_cast<int>(std::max<int64_t>(1, remaining.count()));
+    const int ready = ::poll(&descriptor, 1, timeout_ms);
     if (ready < 0 && errno == EINTR) continue;
     if (ready <= 0) break;
 
     int socket_error = 0;
     socklen_t error_size = sizeof(socket_error);
-    const bool connected = ::getsockopt(socket, SOL_SOCKET, SO_ERROR, &socket_error, &error_size) == 0 &&
-                           socket_error == 0;
-    ::fcntl(socket, F_SETFL, original_flags);
-    return connected;
+    const bool connected =
+      ::getsockopt(socket, SOL_SOCKET, SO_ERROR, &socket_error, &error_size) == 0 &&
+      socket_error == 0;
+    return restore_flags() && connected;
   }
 
-  ::fcntl(socket, F_SETFL, original_flags);
+  restore_flags();
   return false;
 }
 
@@ -77,14 +78,19 @@ TcpFrameCamera::TcpFrameCamera(const std::string & host, uint16_t port)
   addrinfo * addresses = nullptr;
   const auto service = std::to_string(port);
   const int lookup = getaddrinfo(host.c_str(), service.c_str(), &hints, &addresses);
-  if (lookup != 0) throw std::runtime_error("Frame bridge DNS lookup failed: " + std::string(gai_strerror(lookup)));
+  if (lookup != 0) {
+    throw std::runtime_error(
+      "Frame bridge DNS lookup failed: " + std::string(gai_strerror(lookup)));
+  }
 
   const auto connect_deadline = std::chrono::steady_clock::now() + kConnectTimeout;
   for (auto * address = addresses; address != nullptr; address = address->ai_next) {
     if (std::chrono::steady_clock::now() >= connect_deadline) break;
     socket_ = ::socket(address->ai_family, address->ai_socktype, address->ai_protocol);
     if (socket_ < 0) continue;
-    if (connect_with_timeout(socket_, address->ai_addr, address->ai_addrlen, connect_deadline)) break;
+    if (connect_with_timeout(socket_, address->ai_addr, address->ai_addrlen, connect_deadline)) {
+      break;
+    }
     ::close(socket_);
     socket_ = -1;
   }

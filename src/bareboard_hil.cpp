@@ -35,21 +35,48 @@ bool send_neutral(io::Gimbal & gimbal)
 class NeutralOnExit
 {
 public:
-  explicit NeutralOnExit(io::Gimbal & gimbal) : gimbal_(gimbal) {}
+  NeutralOnExit(io::Gimbal & gimbal, unsigned long & success_count, unsigned long & failure_count)
+  : gimbal_(gimbal), success_count_(success_count), failure_count_(failure_count)
+  {
+  }
+
   ~NeutralOnExit()
   {
-    if (armed_ && !send_neutral(gimbal_)) {
-      tools::logger()->warn("Failed to send final neutral frame during cleanup.");
+    if (armed_) {
+      const bool sent = send_neutral_counted();
+      if (sent) {
+        tools::logger()->info(
+          "Cleanup neutral frame sent; tx_success={} tx_failure={}", success_count_,
+          failure_count_);
+      } else {
+        tools::logger()->warn(
+          "Failed to send cleanup neutral frame; tx_success={} tx_failure={}", success_count_,
+          failure_count_);
+      }
     }
   }
 
-  void disarm() { armed_ = false; }
+  bool send_neutral_counted()
+  {
+    const bool sent = send_neutral(gimbal_);
+    sent ? ++success_count_ : ++failure_count_;
+    return sent;
+  }
+
+  bool send_final_and_disarm()
+  {
+    const bool sent = send_neutral_counted();
+    armed_ = false;
+    return sent;
+  }
 
   NeutralOnExit(const NeutralOnExit &) = delete;
   NeutralOnExit & operator=(const NeutralOnExit &) = delete;
 
 private:
   io::Gimbal & gimbal_;
+  unsigned long & success_count_;
+  unsigned long & failure_count_;
   bool armed_ = true;
 };
 }  // namespace
@@ -91,14 +118,9 @@ int main(int argc, char * argv[])
 
   try {
     io::Gimbal gimbal(config_path, serial_port);
-    NeutralOnExit neutral_on_exit(gimbal);
     unsigned long tx_success_count = 0;
     unsigned long tx_failure_count = 0;
-    const auto send_neutral_counted = [&]() {
-      const bool sent = send_neutral(gimbal);
-      sent ? ++tx_success_count : ++tx_failure_count;
-      return sent;
-    };
+    NeutralOnExit neutral_on_exit(gimbal, tx_success_count, tx_failure_count);
 
     std::unique_ptr<io::Camera> camera;
     std::unique_ptr<io::TcpFrameCamera> bridge_camera;
@@ -107,7 +129,8 @@ int main(int argc, char * argv[])
     if (source == "camera") {
       camera = std::make_unique<io::Camera>(config_path);
     } else if (source == "bridge") {
-      bridge_camera = std::make_unique<io::TcpFrameCamera>(bridge_host, static_cast<uint16_t>(bridge_port));
+      bridge_camera = std::make_unique<io::TcpFrameCamera>(
+        bridge_host, static_cast<uint16_t>(bridge_port));
     } else {
       video.open(demo_path + ".avi");
       demo_pose.open(demo_path + ".txt");
@@ -135,7 +158,8 @@ int main(int argc, char * argv[])
       "Bare-board HIL started: source={}, camera frames use timed reads; "
       "all outgoing commands force fire=false, idle MCU mode is allowed.", source);
 
-    while (!stop_requested && (max_frames == 0 || frame_count < static_cast<unsigned long>(max_frames))) {
+    while (!stop_requested &&
+           (max_frames == 0 || frame_count < static_cast<unsigned long>(max_frames))) {
       Eigen::Quaterniond orientation;
       if (source == "demo") {
         if (!video.read(image) || image.empty()) break;
@@ -144,7 +168,7 @@ int main(int argc, char * argv[])
         double qw = 1.0, qx = 0.0, qy = 0.0, qz = 0.0;
         if (!(demo_pose >> seconds >> qw >> qx >> qy >> qz) || !std::isfinite(seconds)) {
           tools::logger()->warn("Demo ended before a matching quaternion was available.");
-          send_neutral_counted();
+          neutral_on_exit.send_neutral_counted();
           ++neutral_count;
           break;
         }
@@ -153,7 +177,7 @@ int main(int argc, char * argv[])
         orientation = Eigen::Quaterniond(qw, qx, qy, qz);
         if (!orientation.coeffs().allFinite() || orientation.norm() < 1e-6) {
           tools::logger()->warn("Invalid quaternion at demo frame {}.", frame_count);
-          send_neutral_counted();
+          neutral_on_exit.send_neutral_counted();
           ++neutral_count;
           ++frame_count;
           continue;
@@ -162,19 +186,21 @@ int main(int argc, char * argv[])
       } else {
         const bool received = source == "camera" ?
                                 camera->read_for(image, timestamp, std::chrono::milliseconds(200)) :
-                                bridge_camera->read_for(image, timestamp, std::chrono::milliseconds(200));
+                                bridge_camera->read_for(
+                                  image, timestamp, std::chrono::milliseconds(200));
         if (!received || image.empty()) {
-          send_neutral_counted();
+          neutral_on_exit.send_neutral_counted();
           ++neutral_count;
           continue;
         }
         if (!gimbal.online()) {
-          send_neutral_counted();
+          neutral_on_exit.send_neutral_counted();
           ++neutral_count;
           const auto now = std::chrono::steady_clock::now();
           if (last_stale_report == std::chrono::steady_clock::time_point{} ||
               now - last_stale_report >= std::chrono::seconds(1)) {
-            tools::logger()->warn("MC-02 state stream stale; camera frame received but control revoked.");
+            tools::logger()->warn(
+              "MC-02 state stream stale; camera frame received but control revoked.");
             last_stale_report = now;
           }
           continue;
@@ -223,12 +249,12 @@ int main(int argc, char * argv[])
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
-    if (send_neutral_counted()) neutral_on_exit.disarm();
+    const bool final_neutral_sent = neutral_on_exit.send_final_and_disarm();
     tools::logger()->info(
       "Bare-board HIL stopped: frames={} target_frames={} aim_frames={} neutral_frames={} "
-      "tx_success={} tx_failure={}; final neutral frame attempted.",
+      "tx_success={} tx_failure={} final_neutral_sent={}",
       frame_count, target_frame_count, command_count, neutral_count, tx_success_count,
-      tx_failure_count);
+      tx_failure_count, final_neutral_sent);
   } catch (const std::exception & e) {
     tools::logger()->critical("Bare-board HIL failed: {}", e.what());
     return 1;

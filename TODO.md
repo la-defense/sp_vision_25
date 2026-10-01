@@ -32,4 +32,4 @@ Central specification: [MC-02 and vision engineering/learning workflow](../mc-02
 
 ## Startup timeouts
 
-- [x] **VIS25-0015** [bug] Bound TCP MVS frame-bridge connection attempts so an unreachable WSL bridge fails promptly. 验收：all resolved address attempts share a two-second connection deadline; the existing constructor reports failure and the process can revoke control. 验证：CPU host build and local refused-connection regression test pass; silent-drop timeout behavior is covered by the bounded nonblocking connect path.
+- [ ] **VIS25-0015** [bug] [ready-for-human] Verify silent-drop TCP connect timeout for the Windows MVS frame bridge and confirm HIL revokes control. 验收：fault-injected silent drop returns within the shared two-second connect deadline, emits/retries neutral control as required, and is recorded in the HIL log. 验证：CPU build and refused-local-port regression test pass; the silent-drop path still needs deterministic host or HIL evidence.
