@@ -19,6 +19,9 @@ public:
   HikRobot(double exposure_ms, double gain, const std::string & vid_pid);
   ~HikRobot() override;
   void read(cv::Mat & img, std::chrono::steady_clock::time_point & timestamp) override;
+  bool read_for(
+    cv::Mat & img, std::chrono::steady_clock::time_point & timestamp,
+    std::chrono::milliseconds timeout) override;
 
 private:
   struct CameraData
@@ -34,6 +37,8 @@ private:
   std::atomic<bool> daemon_quit_;
 
   void * handle_;
+  bool device_open_;
+  bool grabbing_;
   std::thread capture_thread_;
   std::atomic<bool> capturing_;
   std::atomic<bool> capture_quit_;

@@ -66,12 +66,14 @@ struct GimbalState
 class Gimbal
 {
 public:
-  Gimbal(const std::string & config_path);
+  Gimbal(const std::string & config_path, const std::string & serial_port_override = "");
 
   ~Gimbal();
 
   GimbalMode mode() const;
   GimbalState state() const;
+  bool online(std::chrono::milliseconds max_age = std::chrono::milliseconds(250)) const;
+  Eigen::Quaterniond orientation() const;
   std::string str(GimbalMode mode) const;
   Eigen::Quaterniond q(std::chrono::steady_clock::time_point t);
 
@@ -87,9 +89,12 @@ private:
   std::thread thread_;
   std::atomic<bool> quit_ = false;
   mutable std::mutex mutex_;
+  std::mutex tx_mutex_;
 
   GimbalToVision rx_data_;
   VisionToGimbal tx_data_;
+  Eigen::Quaterniond orientation_ = Eigen::Quaterniond::Identity();
+  std::chrono::steady_clock::time_point last_rx_time_{};
 
   GimbalMode mode_ = GimbalMode::IDLE;
   GimbalState state_;
