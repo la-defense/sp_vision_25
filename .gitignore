@@ -1,6 +1,7 @@
 .vscode/
-.github/
 build/
+/build-wsl-hil-static/
+/build-wsl-hil-ninja/
 Camera/
 logs/
 assets/img_with_q/
@@ -13,3 +14,5 @@ testvideos/
 watchdog.sh
 records_24/
 records_25/
+__pycache__/
+*.py[cod]

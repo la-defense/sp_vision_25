@@ -13,3 +13,5 @@ add_library(tools OBJECT
     pid.cpp
     crc.cpp
 )
+
+target_link_libraries(tools PUBLIC spdlog::spdlog fmt::fmt Eigen3::Eigen)

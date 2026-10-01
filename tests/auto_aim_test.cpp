@@ -1,7 +1,10 @@
 #include <fmt/core.h>
 
 #include <chrono>
+#include <cmath>
 #include <fstream>
+#include <iostream>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <opencv2/opencv.hpp>
 
@@ -20,6 +23,7 @@ const std::string keys =
   "{config-path c  | configs/demo.yaml | yaml配置文件的路径}"
   "{start-index s  | 0                 | 视频起始帧下标    }"
   "{end-index e    | 0                 | 视频结束帧下标    }"
+  "{headless       | false             | 只运行分析并输出汇总，不打开窗口}"
   "{@input-path    | assets/demo/demo  | avi和txt文件的路径}";
 
 int main(int argc, char * argv[])
@@ -34,8 +38,10 @@ int main(int argc, char * argv[])
   auto config_path = cli.get<std::string>("config-path");
   auto start_index = cli.get<int>("start-index");
   auto end_index = cli.get<int>("end-index");
+  const bool headless = cli.get<bool>("headless");
 
-  tools::Plotter plotter;
+  std::unique_ptr<tools::Plotter> plotter;
+  if (!headless) plotter = std::make_unique<tools::Plotter>();
   tools::Exiter exiter;
 
   auto video_path = fmt::format("{}.avi", input_path);
@@ -43,7 +49,7 @@ int main(int argc, char * argv[])
   cv::VideoCapture video(video_path);
   std::ifstream text(text_path);
 
-  auto_aim::YOLO yolo(config_path);
+  auto_aim::YOLO yolo(config_path, !headless);
   auto_aim::Solver solver(config_path);
   auto_aim::Tracker tracker(config_path, solver);
   auto_aim::Aimer aimer(config_path);
@@ -54,6 +60,9 @@ int main(int argc, char * argv[])
   auto_aim::Target last_target;
   io::Command last_command;
   double last_t = -1;
+  unsigned long target_frames = 0;
+  unsigned long finite_aim_frames = 0;
+  unsigned long processed_frames = 0;
 
   video.set(cv::CAP_PROP_POS_FRAMES, start_index);
   for (int i = 0; i < start_index; i++) {
@@ -83,6 +92,13 @@ int main(int argc, char * argv[])
 
     auto aimer_start = std::chrono::steady_clock::now();
     auto command = aimer.aim(targets, timestamp, 27, false);
+    ++processed_frames;
+    if (!targets.empty()) ++target_frames;
+    if (!targets.empty() && command.control && std::isfinite(command.yaw) &&
+        std::isfinite(command.pitch)) {
+      ++finite_aim_frames;
+    }
+    if (headless) continue;
 
     if (
       !targets.empty() && aimer.debug_aim_point.valid &&
@@ -186,7 +202,7 @@ int main(int argc, char * argv[])
       data["recent_nis_failures"] = target.ekf().data.at("recent_nis_failures");
     }
 
-    plotter.plot(data);
+    plotter->plot(data);
 
     cv::resize(img, img, {}, 0.5, 0.5);  // 显示时缩小图片尺寸
     cv::imshow("reprojection", img);
@@ -194,5 +210,11 @@ int main(int argc, char * argv[])
     if (key == 'q') break;
   }
 
+  if (headless) {
+    std::cout << "Offline replay summary: frames=" << processed_frames
+              << " target_frames=" << target_frames
+              << " finite_aim_frames=" << finite_aim_frames << '\n';
+    return target_frames > 0 && finite_aim_frames > 0 ? 0 : 1;
+  }
   return 0;
 }

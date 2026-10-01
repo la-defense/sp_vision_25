@@ -7,12 +7,21 @@
 
 namespace io
 {
-Gimbal::Gimbal(const std::string & config_path)
+namespace
+{
+constexpr uint32_t kSerialReadTimeoutMs = 20;
+constexpr int kMaxConsecutiveReadErrors = 10;
+}
+
+Gimbal::Gimbal(const std::string & config_path, const std::string & serial_port_override)
 {
   auto yaml = tools::load(config_path);
-  auto com_port = tools::read<std::string>(yaml, "com_port");
+  auto com_port = serial_port_override.empty() ? tools::read<std::string>(yaml, "com_port") :
+                                                  serial_port_override;
 
   try {
+    auto timeout = serial::Timeout::simpleTimeout(kSerialReadTimeoutMs);
+    serial_.setTimeout(timeout);
     serial_.setPort(com_port);
     serial_.open();
   } catch (const std::exception & e) {
@@ -22,7 +31,13 @@ Gimbal::Gimbal(const std::string & config_path)
 
   thread_ = std::thread(&Gimbal::read_thread, this);
 
-  queue_.pop();
+  std::tuple<Eigen::Quaterniond, std::chrono::steady_clock::time_point> first_sample;
+  if (!queue_.pop_for(first_sample, std::chrono::seconds(2))) {
+    quit_ = true;
+    if (thread_.joinable()) thread_.join();
+    serial_.close();
+    throw std::runtime_error("Timed out waiting for the first valid MC-02 state frame");
+  }
   tools::logger()->info("[Gimbal] First q received.");
 }
 
@@ -43,6 +58,19 @@ GimbalState Gimbal::state() const
 {
   std::lock_guard<std::mutex> lock(mutex_);
   return state_;
+}
+
+bool Gimbal::online(std::chrono::milliseconds max_age) const
+{
+  std::lock_guard<std::mutex> lock(mutex_);
+  return last_rx_time_ != std::chrono::steady_clock::time_point{} &&
+         std::chrono::steady_clock::now() - last_rx_time_ <= max_age;
+}
+
+Eigen::Quaterniond Gimbal::orientation() const
+{
+  std::lock_guard<std::mutex> lock(mutex_);
+  return orientation_;
 }
 
 std::string Gimbal::str(GimbalMode mode) const
@@ -77,44 +105,30 @@ Eigen::Quaterniond Gimbal::q(std::chrono::steady_clock::time_point t)
   }
 }
 
-void Gimbal::send(io::VisionToGimbal VisionToGimbal)
+bool Gimbal::send(io::VisionToGimbal VisionToGimbal)
 {
-  tx_data_.mode = VisionToGimbal.mode;
-  tx_data_.yaw = VisionToGimbal.yaw;
-  tx_data_.yaw_vel = VisionToGimbal.yaw_vel;
-  tx_data_.yaw_acc = VisionToGimbal.yaw_acc;
-  tx_data_.pitch = VisionToGimbal.pitch;
-  tx_data_.pitch_vel = VisionToGimbal.pitch_vel;
-  tx_data_.pitch_acc = VisionToGimbal.pitch_acc;
+  std::lock_guard<std::mutex> tx_lock(tx_mutex_);
+  tx_data_ = VisionToGimbal;
+  tx_data_.head[0] = 'S';
+  tx_data_.head[1] = 'P';
   tx_data_.crc16 = tools::get_crc16(
     reinterpret_cast<uint8_t *>(&tx_data_), sizeof(tx_data_) - sizeof(tx_data_.crc16));
 
   try {
-    serial_.write(reinterpret_cast<uint8_t *>(&tx_data_), sizeof(tx_data_));
+    return serial_.write(reinterpret_cast<uint8_t *>(&tx_data_), sizeof(tx_data_)) ==
+           sizeof(tx_data_);
   } catch (const std::exception & e) {
     tools::logger()->warn("[Gimbal] Failed to write serial: {}", e.what());
+    return false;
   }
 }
 
-void Gimbal::send(
+bool Gimbal::send(
   bool control, bool fire, float yaw, float yaw_vel, float yaw_acc, float pitch, float pitch_vel,
   float pitch_acc)
 {
-  tx_data_.mode = control ? (fire ? 2 : 1) : 0;
-  tx_data_.yaw = yaw;
-  tx_data_.yaw_vel = yaw_vel;
-  tx_data_.yaw_acc = yaw_acc;
-  tx_data_.pitch = pitch;
-  tx_data_.pitch_vel = pitch_vel;
-  tx_data_.pitch_acc = pitch_acc;
-  tx_data_.crc16 = tools::get_crc16(
-    reinterpret_cast<uint8_t *>(&tx_data_), sizeof(tx_data_) - sizeof(tx_data_.crc16));
-
-  try {
-    serial_.write(reinterpret_cast<uint8_t *>(&tx_data_), sizeof(tx_data_));
-  } catch (const std::exception & e) {
-    tools::logger()->warn("[Gimbal] Failed to write serial: {}", e.what());
-  }
+  return send(make_vision_command(
+    control, fire, yaw, yaw_vel, yaw_acc, pitch, pitch_vel, pitch_acc));
 }
 
 bool Gimbal::read(uint8_t * buffer, size_t size)
@@ -133,7 +147,7 @@ void Gimbal::read_thread()
   int error_count = 0;
 
   while (!quit_) {
-    if (error_count > 5000) {
+    if (error_count > kMaxConsecutiveReadErrors) {
       error_count = 0;
       tools::logger()->warn("[Gimbal] Too many errors, attempting to reconnect...");
       reconnect();
@@ -163,6 +177,11 @@ void Gimbal::read_thread()
 
     error_count = 0;
     Eigen::Quaterniond q(rx_data_.q[0], rx_data_.q[1], rx_data_.q[2], rx_data_.q[3]);
+    if (!q.coeffs().allFinite() || q.norm() < 1e-6) {
+      tools::logger()->warn("[Gimbal] Ignoring invalid quaternion in state frame.");
+      continue;
+    }
+    q.normalize();
     queue_.push({q, t});
 
     std::lock_guard<std::mutex> lock(mutex_);
@@ -173,6 +192,8 @@ void Gimbal::read_thread()
     state_.pitch_vel = rx_data_.pitch_vel;
     state_.bullet_speed = rx_data_.bullet_speed;
     state_.bullet_count = rx_data_.bullet_count;
+    orientation_ = q;
+    last_rx_time_ = t;
 
     switch (rx_data_.mode) {
       case 0:

@@ -1,0 +1,65 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "ci-cpu",
+      "displayName": "CPU host build without industrial camera SDKs",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/ci-cpu",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "SP_BUILD_FULL_APPLICATIONS": "OFF",
+        "SP_BUILD_STANDARD_MPC": "ON",
+        "SP_BUILD_AUTO_AIM_TEST": "ON",
+        "SP_BUILD_BAREBOARD_HIL": "ON",
+        "SP_BUILD_AUTO_BUFF": "ON",
+        "SP_ENABLE_HIKROBOT": "OFF",
+        "SP_ENABLE_MINDVISION": "OFF"
+      }
+    },
+    {
+      "name": "wsl-hil",
+      "displayName": "WSL CPU self-aim and MC-02 HIL",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/wsl-hil",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "SP_BUILD_FULL_APPLICATIONS": "OFF",
+        "SP_BUILD_STANDARD_MPC": "ON",
+        "SP_BUILD_AUTO_AIM_TEST": "ON",
+        "SP_BUILD_BAREBOARD_HIL": "ON",
+        "SP_BUILD_AUTO_BUFF": "ON",
+        "SP_ENABLE_HIKROBOT": "ON",
+        "SP_ENABLE_MINDVISION": "OFF",
+        "SP_OPENVINO_CMAKE_DIR": "/opt/intel/openvino_2024.6.0/runtime/cmake"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "ci-cpu-targets",
+      "configurePreset": "ci-cpu",
+      "targets": [
+        "standard_mpc",
+        "auto_aim_test",
+        "bareboard_hil",
+        "sp_vision_protocol_test",
+        "sp_vision_tcp_camera_test"
+      ]
+    },
+    {
+      "name": "wsl-hil-targets",
+      "configurePreset": "wsl-hil",
+      "targets": [
+        "standard_mpc",
+        "auto_aim_test",
+        "bareboard_hil"
+      ]
+    }
+  ]
+}
