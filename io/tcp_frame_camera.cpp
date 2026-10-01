@@ -2,6 +2,7 @@
 #include <opencv2/imgcodecs.hpp>
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netdb.h>
 #include <poll.h>
 #include <sys/socket.h>
@@ -21,6 +22,44 @@ namespace
 constexpr size_t kHeaderSize = 16;
 constexpr uint32_t kMaxDimension = 8192;
 constexpr uint32_t kMaxPayload = 256U * 1024U * 1024U;
+constexpr auto kConnectTimeout = std::chrono::seconds(2);
+
+bool connect_with_timeout(int socket, const sockaddr * address, socklen_t address_size,
+                          std::chrono::steady_clock::time_point deadline)
+{
+  const int original_flags = ::fcntl(socket, F_GETFL, 0);
+  if (original_flags < 0 || ::fcntl(socket, F_SETFL, original_flags | O_NONBLOCK) < 0) return false;
+
+  const int result = ::connect(socket, address, address_size);
+  if (result == 0) {
+    ::fcntl(socket, F_SETFL, original_flags);
+    return true;
+  }
+  if (errno != EINPROGRESS && errno != EALREADY && errno != EINTR) {
+    ::fcntl(socket, F_SETFL, original_flags);
+    return false;
+  }
+
+  while (true) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) break;
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+    pollfd descriptor{socket, POLLOUT, 0};
+    const int ready = ::poll(&descriptor, 1, static_cast<int>(std::max<int64_t>(1, remaining.count())));
+    if (ready < 0 && errno == EINTR) continue;
+    if (ready <= 0) break;
+
+    int socket_error = 0;
+    socklen_t error_size = sizeof(socket_error);
+    const bool connected = ::getsockopt(socket, SOL_SOCKET, SO_ERROR, &socket_error, &error_size) == 0 &&
+                           socket_error == 0;
+    ::fcntl(socket, F_SETFL, original_flags);
+    return connected;
+  }
+
+  ::fcntl(socket, F_SETFL, original_flags);
+  return false;
+}
 
 uint32_t read_network_u32(const uint8_t * p)
 {
@@ -40,10 +79,12 @@ TcpFrameCamera::TcpFrameCamera(const std::string & host, uint16_t port)
   const int lookup = getaddrinfo(host.c_str(), service.c_str(), &hints, &addresses);
   if (lookup != 0) throw std::runtime_error("Frame bridge DNS lookup failed: " + std::string(gai_strerror(lookup)));
 
+  const auto connect_deadline = std::chrono::steady_clock::now() + kConnectTimeout;
   for (auto * address = addresses; address != nullptr; address = address->ai_next) {
+    if (std::chrono::steady_clock::now() >= connect_deadline) break;
     socket_ = ::socket(address->ai_family, address->ai_socktype, address->ai_protocol);
     if (socket_ < 0) continue;
-    if (::connect(socket_, address->ai_addr, address->ai_addrlen) == 0) break;
+    if (connect_with_timeout(socket_, address->ai_addr, address->ai_addrlen, connect_deadline)) break;
     ::close(socket_);
     socket_ = -1;
   }

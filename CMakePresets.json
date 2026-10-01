@@ -48,7 +48,8 @@
         "standard_mpc",
         "auto_aim_test",
         "bareboard_hil",
-        "sp_vision_protocol_test"
+        "sp_vision_protocol_test",
+        "sp_vision_tcp_camera_test"
       ]
     },
     {

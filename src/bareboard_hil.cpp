@@ -169,7 +169,7 @@ int main(int argc, char * argv[])
           continue;
         }
         if (!gimbal.online()) {
-          send_neutral(gimbal);
+          send_neutral_counted();
           ++neutral_count;
           const auto now = std::chrono::steady_clock::now();
           if (last_stale_report == std::chrono::steady_clock::time_point{} ||

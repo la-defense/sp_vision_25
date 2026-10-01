@@ -15,12 +15,7 @@ public:
   virtual void read(cv::Mat & img, std::chrono::steady_clock::time_point & timestamp) = 0;
   virtual bool read_for(
     cv::Mat & img, std::chrono::steady_clock::time_point & timestamp,
-    std::chrono::milliseconds timeout)
-  {
-    (void)timeout;
-    read(img, timestamp);
-    return true;
-  }
+    std::chrono::milliseconds timeout) = 0;
 };
 
 class Camera

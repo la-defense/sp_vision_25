@@ -3,6 +3,7 @@
 #include <libusb-1.0/libusb.h>
 
 #include <stdexcept>
+#include <utility>
 
 #include "tools/logger.hpp"
 
@@ -57,6 +58,18 @@ void MindVision::read(cv::Mat & img, std::chrono::steady_clock::time_point & tim
 
   img = data.img;
   timestamp = data.timestamp;
+}
+
+bool MindVision::read_for(
+  cv::Mat & img, std::chrono::steady_clock::time_point & timestamp,
+  std::chrono::milliseconds timeout)
+{
+  CameraData data;
+  if (!queue_.pop_for(data, timeout)) return false;
+
+  img = std::move(data.img);
+  timestamp = data.timestamp;
+  return true;
 }
 
 void MindVision::open()

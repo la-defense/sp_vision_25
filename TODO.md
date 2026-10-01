@@ -7,10 +7,10 @@ Central specification: [MC-02 and vision engineering/learning workflow](../mc-02
 ## Communication and safety
 
 - [x] **VIS25-0001** [bug] Replace the SP frame upper-bound checks with exact 43-byte state and 29-byte command assertions. 验收：both compile-time checks fail if either packed wire structure changes size. 验证：CPU build compiled both static assertions.
-- [x] **VIS25-0002** [bug] Make Gimbal sends report full-frame write success and expose HIL transmit failures in the final summary. 验收：short writes and exceptions are counted as failed; the wire bytes and CRC remain unchanged. 验证：send returns false on partial write/exception; HIL summary counts send successes and failures; command CRC tests pass.
+- [x] **VIS25-0002** [bug] Make Gimbal sends report full-frame write success and count every HIL transmission, including stale-link neutral frames. 验收：short writes, exceptions, and every neutral or aim send are reflected in the final summary; wire bytes and CRC remain unchanged. 验证：all HIL send paths use counted wrappers; protocol tests pass.
 - [ ] **VIS25-0003** [bug] [ready-for-agent] Bound startup waiting for the first valid MC-02 status frame and exit cleanly if the link never comes online. 验收：missing, corrupt, and valid first frames have bounded, tested outcomes with no blocked process.
 - [ ] **VIS25-0004** [bug] [ready-for-agent] Validate mode, finite aim values, fresh MC-02 state, and control bounds before emitting an aim command. 验收：invalid or stale inputs produce a neutral frame with fire disabled.
-- [ ] **VIS25-0005** [bug] [ready-for-agent] Verify neutral control on no target, camera timeout, serial loss, signal, and normal exit. 验收：each scenario logs a neutral command and the MC-02 timeout clears stale commands if transmission is impossible.
+- [ ] **VIS25-0005** [bug] [ready-for-agent] Verify neutral control on no target, camera timeout for every enabled camera backend, serial loss, signal, and normal exit. 验收：each host-simulatable scenario produces a no-fire neutral command; serial loss is reflected in TX failure counts; MC-02 timeout clears stale commands if transmission is impossible.
 
 ## Build and tests
 
@@ -22,10 +22,14 @@ Central specification: [MC-02 and vision engineering/learning workflow](../mc-02
 ## Hardware integration
 
 - [ ] **VIS25-0010** [enhancement] [ready-for-human] Automate manually dispatched bare-board HIL using exact firmware and vision commit SHAs on a restricted Windows runner. 验收：report records both SHAs, builds, frames, aim/neutral counts, RX and CRC counter deltas, and process cleanup.
-- [x] **VIS25-0011** [enhancement] Run Windows MVS and COM bridges through WSL and verify sustained industrial-camera acquisition. 验收：at least 100 camera frames reach the recognizer; absence of an armor target causes neutral output. 验证：[本机部署记录](../mc-02/docs/本机WSL自瞄联调部署记录.md) records 100 bridged camera frames and neutral output with no armor target.
+- [ ] **VIS25-0011** [enhancement] [ready-for-human] Verify Windows MVS camera and virtual COM-to-WSL PTY bridges end-to-end. 验收：at least 100 camera frames reach the recognizer, and bidirectional SP status/command frames are verified through the WSL serial bridge. 验证：camera bridge evidence is recorded in the [local WSL deployment record](../mc-02/docs/本机WSL自瞄联调部署记录.md); the serial bridge still needs end-to-end WSL evidence.
 - [ ] **VIS25-0012** [bug] [needs-info] Diagnose HIL-10 CMSIS-DAP I/O errors and distinguish probe failure from MCU reset and counter reinitialization. 验收：short SWD snapshots do not reset or halt the MCU and before/after counters prove that the target stayed up. 继续前需补充原始长会话命令和错误日志；当前通用 attach-only 脚本会停核。
 
 ## Engineering workflow
 
 - [x] **VIS25-0013** [enhancement] Connect the vision task queue, CPU CI, and shared Chinese learning workspace to the MC-02 workflow. 验收：the central spec and teaching index are linked, CPU CI covers protocol and headless replay, and the shared C++ exercises pass; firmware-side counterpart is **MC02-0030** ([MC-02 TODO](../mc-02/.Doc/TODO.md)). 验证：双向任务链接、中央规格/学习索引链接、CPU CTest 与四组共享练习通过。
 - [ ] **VIS25-0014** [enhancement] [ready-for-human] Create la-defense's public vision fork and private HIL repository, then configure a restricted Windows runner for manual exact-SHA tests. 验收：only trusted in-repository workflows execute on the runner; reports record both SHAs, no-fire frames, RX/CRC deltas, build/flash status, and reset evidence; firmware-side counterpart is **MC02-0031** ([MC-02 TODO](../mc-02/.Doc/TODO.md)). 已创建 [视觉 fork](https://github.com/la-defense/sp_vision_25) 和 [私有 HIL 仓库](https://github.com/la-defense/mc-02-hil)，runner 尚未配置。
+
+## Startup timeouts
+
+- [x] **VIS25-0015** [bug] Bound TCP MVS frame-bridge connection attempts so an unreachable WSL bridge fails promptly. 验收：all resolved address attempts share a two-second connection deadline; the existing constructor reports failure and the process can revoke control. 验证：CPU host build and local refused-connection regression test pass; silent-drop timeout behavior is covered by the bounded nonblocking connect path.

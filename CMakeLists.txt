@@ -64,6 +64,9 @@ if(BUILD_TESTING)
     tools/crc.cpp)
   target_include_directories(sp_vision_protocol_test PRIVATE ${PROJECT_SOURCE_DIR})
   add_test(NAME sp_vision_protocol_test COMMAND sp_vision_protocol_test)
+  add_executable(sp_vision_tcp_camera_test tests/host/tcp_frame_camera_test.cpp)
+  target_link_libraries(sp_vision_tcp_camera_test PRIVATE io ${OpenCV_LIBS})
+  add_test(NAME sp_vision_tcp_camera_test COMMAND sp_vision_tcp_camera_test)
   if(SP_BUILD_AUTO_AIM_TEST)
     add_test(
       NAME offline_demo_replay
