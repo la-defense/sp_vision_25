@@ -31,7 +31,13 @@ Gimbal::Gimbal(const std::string & config_path, const std::string & serial_port_
 
   thread_ = std::thread(&Gimbal::read_thread, this);
 
-  queue_.pop();
+  std::tuple<Eigen::Quaterniond, std::chrono::steady_clock::time_point> first_sample;
+  if (!queue_.pop_for(first_sample, std::chrono::seconds(2))) {
+    quit_ = true;
+    if (thread_.joinable()) thread_.join();
+    serial_.close();
+    throw std::runtime_error("Timed out waiting for the first valid MC-02 state frame");
+  }
   tools::logger()->info("[Gimbal] First q received.");
 }
 
@@ -99,46 +105,30 @@ Eigen::Quaterniond Gimbal::q(std::chrono::steady_clock::time_point t)
   }
 }
 
-void Gimbal::send(io::VisionToGimbal VisionToGimbal)
+bool Gimbal::send(io::VisionToGimbal VisionToGimbal)
 {
   std::lock_guard<std::mutex> tx_lock(tx_mutex_);
-  tx_data_.mode = VisionToGimbal.mode;
-  tx_data_.yaw = VisionToGimbal.yaw;
-  tx_data_.yaw_vel = VisionToGimbal.yaw_vel;
-  tx_data_.yaw_acc = VisionToGimbal.yaw_acc;
-  tx_data_.pitch = VisionToGimbal.pitch;
-  tx_data_.pitch_vel = VisionToGimbal.pitch_vel;
-  tx_data_.pitch_acc = VisionToGimbal.pitch_acc;
+  tx_data_ = VisionToGimbal;
+  tx_data_.head[0] = 'S';
+  tx_data_.head[1] = 'P';
   tx_data_.crc16 = tools::get_crc16(
     reinterpret_cast<uint8_t *>(&tx_data_), sizeof(tx_data_) - sizeof(tx_data_.crc16));
 
   try {
-    serial_.write(reinterpret_cast<uint8_t *>(&tx_data_), sizeof(tx_data_));
+    return serial_.write(reinterpret_cast<uint8_t *>(&tx_data_), sizeof(tx_data_)) ==
+           sizeof(tx_data_);
   } catch (const std::exception & e) {
     tools::logger()->warn("[Gimbal] Failed to write serial: {}", e.what());
+    return false;
   }
 }
 
-void Gimbal::send(
+bool Gimbal::send(
   bool control, bool fire, float yaw, float yaw_vel, float yaw_acc, float pitch, float pitch_vel,
   float pitch_acc)
 {
-  std::lock_guard<std::mutex> tx_lock(tx_mutex_);
-  tx_data_.mode = control ? (fire ? 2 : 1) : 0;
-  tx_data_.yaw = yaw;
-  tx_data_.yaw_vel = yaw_vel;
-  tx_data_.yaw_acc = yaw_acc;
-  tx_data_.pitch = pitch;
-  tx_data_.pitch_vel = pitch_vel;
-  tx_data_.pitch_acc = pitch_acc;
-  tx_data_.crc16 = tools::get_crc16(
-    reinterpret_cast<uint8_t *>(&tx_data_), sizeof(tx_data_) - sizeof(tx_data_.crc16));
-
-  try {
-    serial_.write(reinterpret_cast<uint8_t *>(&tx_data_), sizeof(tx_data_));
-  } catch (const std::exception & e) {
-    tools::logger()->warn("[Gimbal] Failed to write serial: {}", e.what());
-  }
+  return send(make_vision_command(
+    control, fire, yaw, yaw_vel, yaw_acc, pitch, pitch_vel, pitch_acc));
 }
 
 bool Gimbal::read(uint8_t * buffer, size_t size)

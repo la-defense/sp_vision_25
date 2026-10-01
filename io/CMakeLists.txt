@@ -9,6 +9,7 @@ set(IO_SOURCES
   camera.cpp
   cboard.cpp
   dm_imu/dm_imu.cpp
+  gimbal/protocol.cpp
   gimbal/gimbal.cpp
 )
 
@@ -20,7 +21,7 @@ if(SP_ENABLE_MINDVISION)
 endif()
 
 if(NOT SP_ENABLE_HIKROBOT AND NOT SP_ENABLE_MINDVISION)
-  message(FATAL_ERROR "At least one industrial camera backend must be enabled")
+  message(STATUS "Building without a hardware camera SDK; camera input is unavailable")
 endif()
 
 add_library(io STATIC ${IO_SOURCES})

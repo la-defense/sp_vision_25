@@ -27,28 +27,30 @@ void request_stop(int)
   stop_requested = 1;
 }
 
-bool finite_plan(const auto_aim::Plan & plan)
+bool send_neutral(io::Gimbal & gimbal)
 {
-  return std::isfinite(plan.yaw) && std::isfinite(plan.yaw_vel) && std::isfinite(plan.yaw_acc) &&
-         std::isfinite(plan.pitch) && std::isfinite(plan.pitch_vel) && std::isfinite(plan.pitch_acc);
-}
-
-void send_neutral(io::Gimbal & gimbal)
-{
-  gimbal.send(false, false, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F);
+  return gimbal.send(false, false, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F);
 }
 
 class NeutralOnExit
 {
 public:
   explicit NeutralOnExit(io::Gimbal & gimbal) : gimbal_(gimbal) {}
-  ~NeutralOnExit() { send_neutral(gimbal_); }
+  ~NeutralOnExit()
+  {
+    if (armed_ && !send_neutral(gimbal_)) {
+      tools::logger()->warn("Failed to send final neutral frame during cleanup.");
+    }
+  }
+
+  void disarm() { armed_ = false; }
 
   NeutralOnExit(const NeutralOnExit &) = delete;
   NeutralOnExit & operator=(const NeutralOnExit &) = delete;
 
 private:
   io::Gimbal & gimbal_;
+  bool armed_ = true;
 };
 }  // namespace
 
@@ -90,6 +92,13 @@ int main(int argc, char * argv[])
   try {
     io::Gimbal gimbal(config_path, serial_port);
     NeutralOnExit neutral_on_exit(gimbal);
+    unsigned long tx_success_count = 0;
+    unsigned long tx_failure_count = 0;
+    const auto send_neutral_counted = [&]() {
+      const bool sent = send_neutral(gimbal);
+      sent ? ++tx_success_count : ++tx_failure_count;
+      return sent;
+    };
 
     std::unique_ptr<io::Camera> camera;
     std::unique_ptr<io::TcpFrameCamera> bridge_camera;
@@ -135,7 +144,7 @@ int main(int argc, char * argv[])
         double qw = 1.0, qx = 0.0, qy = 0.0, qz = 0.0;
         if (!(demo_pose >> seconds >> qw >> qx >> qy >> qz) || !std::isfinite(seconds)) {
           tools::logger()->warn("Demo ended before a matching quaternion was available.");
-          send_neutral(gimbal);
+          send_neutral_counted();
           ++neutral_count;
           break;
         }
@@ -144,7 +153,7 @@ int main(int argc, char * argv[])
         orientation = Eigen::Quaterniond(qw, qx, qy, qz);
         if (!orientation.coeffs().allFinite() || orientation.norm() < 1e-6) {
           tools::logger()->warn("Invalid quaternion at demo frame {}.", frame_count);
-          send_neutral(gimbal);
+          send_neutral_counted();
           ++neutral_count;
           ++frame_count;
           continue;
@@ -155,7 +164,7 @@ int main(int argc, char * argv[])
                                 camera->read_for(image, timestamp, std::chrono::milliseconds(200)) :
                                 bridge_camera->read_for(image, timestamp, std::chrono::milliseconds(200));
         if (!received || image.empty()) {
-          send_neutral(gimbal);
+          send_neutral_counted();
           ++neutral_count;
           continue;
         }
@@ -178,27 +187,30 @@ int main(int argc, char * argv[])
       auto armors = yolo.detect(image, static_cast<int>(frame_count));
       auto targets = tracker.track(armors, timestamp);
 
+      io::VisionToGimbal command = io::make_vision_command(false, false, 0, 0, 0, 0, 0, 0);
       if (!targets.empty()) {
         ++target_frame_count;
         const auto gimbal_state = gimbal.state();
         const auto plan = planner.plan(targets.front(), gimbal_state.bullet_speed);
-        if (plan.control && finite_plan(plan) && gimbal.online()) {
-          // The bool overload maps this to protocol mode 1. The fire argument is a literal false.
-          gimbal.send(true, false, plan.yaw, plan.yaw_vel, plan.yaw_acc,
-                      plan.pitch, plan.pitch_vel, plan.pitch_acc);
-          ++command_count;
-          if (command_count == 1 || command_count % 100 == 0) {
-            tools::logger()->info(
-              "Aim frame={} targets={} mode={} yaw={:.4f} pitch={:.4f} fire=forced-off",
-              frame_count, targets.size(), static_cast<int>(gimbal.mode()), plan.yaw, plan.pitch);
-          }
-        } else {
-          send_neutral(gimbal);
-          ++neutral_count;
-        }
+        command = io::make_bareboard_control_command(
+          true, gimbal.online(), plan.control, plan.yaw, plan.yaw_vel, plan.yaw_acc,
+          plan.pitch, plan.pitch_vel, plan.pitch_acc);
+      }
+      const bool aim_command = command.mode == 1;
+      if (gimbal.send(command)) {
+        ++tx_success_count;
+        if (aim_command) ++command_count;
+        else ++neutral_count;
       } else {
-        send_neutral(gimbal);
-        ++neutral_count;
+        ++tx_failure_count;
+        if (!aim_command) ++neutral_count;
+      }
+      if (aim_command && (command_count == 1 || command_count % 100 == 0)) {
+        const float command_yaw = command.yaw;
+        const float command_pitch = command.pitch;
+        tools::logger()->info(
+          "Aim frame={} targets={} mode={} yaw={:.4f} pitch={:.4f} fire=forced-off",
+          frame_count, targets.size(), static_cast<int>(gimbal.mode()), command_yaw, command_pitch);
       }
 
       const auto now = std::chrono::steady_clock::now();
@@ -211,11 +223,12 @@ int main(int argc, char * argv[])
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
-    send_neutral(gimbal);
+    if (send_neutral_counted()) neutral_on_exit.disarm();
     tools::logger()->info(
-      "Bare-board HIL stopped: frames={} target_frames={} aim_frames={} neutral_frames={}; "
-      "final neutral frame sent.",
-      frame_count, target_frame_count, command_count, neutral_count);
+      "Bare-board HIL stopped: frames={} target_frames={} aim_frames={} neutral_frames={} "
+      "tx_success={} tx_failure={}; final neutral frame attempted.",
+      frame_count, target_frame_count, command_count, neutral_count, tx_success_count,
+      tx_failure_count);
   } catch (const std::exception & e) {
     tools::logger()->critical("Bare-board HIL failed: {}", e.what());
     return 1;

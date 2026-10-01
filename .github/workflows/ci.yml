@@ -1,0 +1,47 @@
+name: Vision CPU CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build pkg-config curl \
+            libopencv-dev libfmt-dev libeigen3-dev libspdlog-dev \
+            libyaml-cpp-dev nlohmann-json3-dev libceres-dev
+
+      - name: Install pinned OpenVINO runtime
+        run: |
+          archive=l_openvino_toolkit_ubuntu22_2024.6.0.17404.4c0f47d2335_x86_64.tgz
+          url=https://storage.openvinotoolkit.org/repositories/openvino/packages/2024.6/linux/$archive
+          curl --fail --location --retry 3 "$url" --output "$RUNNER_TEMP/openvino.tgz"
+          tar -xzf "$RUNNER_TEMP/openvino.tgz" -C "$RUNNER_TEMP"
+          sdk="$RUNNER_TEMP/l_openvino_toolkit_ubuntu22_2024.6.0.17404.4c0f47d2335_x86_64"
+          echo "OPENVINO_CMAKE_DIR=$sdk/runtime/cmake" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$sdk/runtime/lib/intel64:$sdk/runtime/3rdparty/tbb/lib:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+
+      - name: Check TODO contract
+        run: python3 tools/workflow/check_todo.py
+
+      - name: Configure CPU-only build
+        run: cmake --preset ci-cpu -DSP_OPENVINO_CMAKE_DIR="$OPENVINO_CMAKE_DIR"
+
+      - name: Build required targets
+        run: cmake --build --preset ci-cpu-targets --parallel 2
+
+      - name: Run protocol and offline replay tests
+        run: ctest --test-dir build/ci-cpu --output-on-failure

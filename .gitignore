@@ -1,5 +1,4 @@
 .vscode/
-.github/
 build/
 /build-wsl-hil-static/
 /build-wsl-hil-ninja/

@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.16.3)
 
 project(sp_vision LANGUAGES CXX)
+include(CTest)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -53,6 +54,24 @@ endif()
 if(SP_BUILD_BAREBOARD_HIL)
   add_executable(bareboard_hil src/bareboard_hil.cpp)
   target_link_libraries(bareboard_hil ${OpenCV_LIBS} fmt::fmt yaml-cpp tools io auto_aim)
+endif()
+
+if(BUILD_TESTING)
+  add_executable(
+    sp_vision_protocol_test
+    tests/host/protocol_test.cpp
+    io/gimbal/protocol.cpp
+    tools/crc.cpp)
+  target_include_directories(sp_vision_protocol_test PRIVATE ${PROJECT_SOURCE_DIR})
+  add_test(NAME sp_vision_protocol_test COMMAND sp_vision_protocol_test)
+  if(SP_BUILD_AUTO_AIM_TEST)
+    add_test(
+      NAME offline_demo_replay
+      COMMAND auto_aim_test --headless --end-index=150 --config-path=configs/demo.yaml
+              assets/demo/demo)
+    set_tests_properties(
+      offline_demo_replay PROPERTIES WORKING_DIRECTORY ${PROJECT_SOURCE_DIR} TIMEOUT 180)
+  endif()
 endif()
 
 if(SP_BUILD_FULL_APPLICATIONS)
